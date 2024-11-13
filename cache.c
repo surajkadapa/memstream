@@ -12,24 +12,51 @@
 static cache_t* cache = NULL;
 static int shm_id = -1;
 
-int cache_init(size_t max_memory_size) {
+int cache_connect(void) {
     if (cache != NULL) {
-        return -1;
+        return 0;  //already connected
     }
 
-    shm_id = shmget(SHM_KEY, sizeof(cache_t) + max_memory_size, 
-                    IPC_CREAT | 0666);
+    shm_id = shmget(SHM_KEY, 0, 0666);
     if (shm_id == -1) {
+        printf("Failed to find shared memory: %s\n", strerror(errno));
         return -1;
     }
 
-    // Attach to shared memory
+    // attach to shared memory
     cache = (cache_t*)shmat(shm_id, NULL, 0);
     if (cache == (void*)-1) {
+        printf("Failed to attach to shared memory: %s\n", strerror(errno));
         return -1;
     }
 
-    // Initialize cache structure
+    return 0;
+}
+
+int cache_init(size_t max_memory_size) {
+    printf("Initializing cache with size: %zu bytes\n", max_memory_size);
+
+    if (cache != NULL) {
+        printf("Error: Cache already initialized\n");
+        return -1;
+    }
+
+    shm_id = shmget(SHM_KEY, sizeof(cache_t) + max_memory_size,
+                    IPC_CREAT | 0666);
+    if (shm_id == -1) {
+        printf("shmget failed: %s\n", strerror(errno));
+        return -1;
+    }
+    printf("Created shared memory segment: %d\n", shm_id);
+
+    cache = (cache_t*)shmat(shm_id, NULL, 0);
+    if (cache == (void*)-1) {
+        printf("shmat failed: %s\n", strerror(errno));
+        return -1;
+    }
+    printf("Attached to shared memory at: %p\n", (void*)cache);
+
+    //initialize cache structure
     pthread_rwlockattr_t attr;
     pthread_rwlockattr_init(&attr);
     pthread_rwlockattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
@@ -39,6 +66,7 @@ int cache_init(size_t max_memory_size) {
     cache->max_memory = max_memory_size;
     cache->used_memory = 0;
     memset(&cache->stats, 0, sizeof(cache_stats_t));
+    cache->stats.total_size = max_memory_size;  //initialize total size
     memset(cache->entries, 0, sizeof(entry_t) * MAX_ENTRIES);
 
     return 0;
@@ -58,7 +86,7 @@ void cache_destroy(void) {
 
 static entry_t* find_entry(const char* key) {
     for (size_t i = 0; i < MAX_ENTRIES; i++) {
-        if (cache->entries[i].is_valid && 
+        if (cache->entries[i].is_valid &&
             strcmp(cache->entries[i].key, key) == 0) {
             return &cache->entries[i];
         }
@@ -76,7 +104,9 @@ static entry_t* find_free_entry(void) {
 }
 
 int cache_set(const char* key, const void* value, size_t value_size) {
-    if (!cache || !key || !value || value_size == 0 || 
+    printf("\nDEBUG: cache_set called with key=%s, size=%zu\n", key, value_size);
+
+    if (!cache || !key || !value || value_size == 0 ||
         strlen(key) >= MAX_KEY_LENGTH) {
         return -1;
     }
@@ -85,18 +115,15 @@ int cache_set(const char* key, const void* value, size_t value_size) {
 
     entry_t* entry = find_entry(key);
     if (entry) {
-        // Update existing entry
-        if (value_size > entry->value_size) {
-            if (cache->used_memory - entry->value_size + value_size > cache->max_memory) {
-                pthread_rwlock_unlock(&cache->lock);
-                return -1;
-            }
+        if (value_size != entry->value_size) {
             cache->used_memory = cache->used_memory - entry->value_size + value_size;
+            cache->stats.used_size = cache->used_memory;
+            printf("Updated memory usage: old=%zu, new=%zu, total=%zu\n",
+                   entry->value_size, value_size, cache->used_memory);
         }
         memcpy(cache->data + entry->data_offset, value, value_size);
         entry->value_size = value_size;
     } else {
-        // Create new entry
         if (cache->used_memory + value_size > cache->max_memory) {
             pthread_rwlock_unlock(&cache->lock);
             return -1;
@@ -111,9 +138,14 @@ int cache_set(const char* key, const void* value, size_t value_size) {
         entry->value_size = value_size;
         entry->is_valid = 1;
         entry->created_at = time(NULL);
-        cache->used_memory += value_size;
-        cache->stats.total_entries++;
+
         memcpy(cache->data + entry->data_offset, value, value_size);
+        cache->used_memory += value_size;
+        cache->stats.used_size = cache->used_memory;
+        cache->stats.total_entries++;
+
+        printf("New entry: key=%s, size=%zu, offset=%zu, total_memory=%zu\n",
+               key, value_size, entry->data_offset, cache->used_memory);
     }
 
     entry->last_access = time(NULL);
@@ -153,6 +185,8 @@ int cache_get(const char* key, void* value, size_t* value_size) {
 }
 
 int cache_delete(const char* key) {
+    printf("\nDEBUG: cache_delete called with key=%s\n", key);
+
     if (!cache || !key) {
         return -1;
     }
@@ -166,9 +200,11 @@ int cache_delete(const char* key) {
     }
 
     cache->used_memory -= entry->value_size;
+    cache->stats.used_size = cache->used_memory;
     cache->stats.total_entries--;
     entry->is_valid = 0;
 
+    printf("DEBUG: After delete - used_memory=%zu\n", cache->used_memory);
     pthread_rwlock_unlock(&cache->lock);
     return 0;
 }
@@ -179,7 +215,13 @@ int cache_get_stats(cache_stats_t* stats) {
     }
 
     pthread_rwlock_rdlock(&cache->lock);
-    memcpy(stats, &cache->stats, sizeof(cache_stats_t));
+    stats->total_size = cache->stats.total_size;
+    stats->used_size = cache->used_memory;  //use current used_memory
+    stats->total_entries = cache->stats.total_entries;
+    stats->hits = cache->stats.hits;
+    stats->misses = cache->stats.misses;
+    // printf("\nDEBUG: Stats - entries=%zu, used_memory=%zu\n",
+        //    stats->total_entries, stats->used_size);
     pthread_rwlock_unlock(&cache->lock);
     return 0;
 }

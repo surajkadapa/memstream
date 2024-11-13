@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 int cache_init(size_t max_memory_size);
+int cache_connect(void);
 void cache_destroy(void);
 int cache_set(const char* key, const void* value, size_t value_size);
 int cache_get(const char* key, void* value, size_t* value_size);

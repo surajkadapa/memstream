@@ -1,24 +1,15 @@
-CC=gcc
-CFLAGS=-Wall -fPIC
-LDFLAGS=-shared -pthread
+.PHONY: build run clean
 
-all: libcache.so cache_manager
+build:
+	docker build -t cache-writer-service .
 
-# Shared library
-libcache.so: cache.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-# Cache manager executable
-cache_manager: cache_manager.o libcache.so
-	$(CC) -o $@ cache_manager.o -L. -lcache -pthread -Wl,-rpath,.
-
-cache.o: cache.c cache.h cache_internal.h
-	$(CC) $(CFLAGS) -c $<
-
-cache_manager.o: cache_manager.c cache.h
-	$(CC) $(CFLAGS) -c $<
+run:
+	docker run -it --rm \
+		--privileged \
+		--ipc=host \
+		--pid=host \
+		--network=host \
+		cache-writer-service
 
 clean:
-	rm -f *.o libcache.so cache_manager
-
-.PHONY: all clean
+	docker rmi cache-writer-service
