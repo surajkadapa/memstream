@@ -5,6 +5,7 @@ import time
 import uuid
 import sys
 import os
+import signal
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass
@@ -287,49 +288,72 @@ class CacheWriter:
 
     def cleanup(self):
         """Cleanup before exit"""
-        self.running = False
-        if self.heartbeat_thread.is_alive():
-            self.heartbeat_thread.join()
+        try:
+            # Stop heartbeat thread
+            self.running = False
+            if self.heartbeat_thread.is_alive():
+                self.heartbeat_thread.join()
 
-        # Send WARN log for node going down
-        warn_msg = {
-            "log_id": str(uuid.uuid4()),
-            "node_id": self.node_id,
-            "log_level": "WARN",
-            "message_type": "LOG",
-            "message": "node going off",
-            "service_name": self.service_name,
-            "response_time_ms": "0",
-            "threshold_limit_ms": "0",
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.emit('log.warn', warn_msg)
+            # Send WARN log for node going down
+            warn_msg = {
+                "log_id": str(uuid.uuid4()),
+                "node_id": self.node_id,
+                "log_level": "WARN",
+                "message_type": "LOG",
+                "message": "node going off",
+                "service_name": self.service_name,
+                "response_time_ms": "0",
+                "threshold_limit_ms": "0",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.logger.emit('log.warn', warn_msg)
 
-        # Send registry update with DOWN status
-        registry_msg = {
-            "message_type": "REGISTRATION",
-            "node_id": self.node_id,
-            "service_name": self.service_name,
-            "status": "DOWN",
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.emit('registration', registry_msg)
+            # Send registry update with DOWN status
+            registry_msg = {
+                "message_type": "REGISTRATION",
+                "node_id": self.node_id,
+                "service_name": self.service_name,
+                "status": "DOWN",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.logger.emit('registration', registry_msg)
 
-        # Final heartbeat with DOWN status
-        heartbeat_msg = {
-            "node_id": self.node_id,
-            "message_type": "HEARTBEAT",
-            "status": "DOWN",
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.emit('heartbeat', heartbeat_msg)
+            # Final heartbeat with DOWN status
+            heartbeat_msg = {
+                "node_id": self.node_id,
+                "message_type": "HEARTBEAT",
+                "status": "DOWN",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.logger.emit('heartbeat', heartbeat_msg)
 
-        # Give time for logs to be sent
-        time.sleep(1)
+            # Force flush any remaining messages
+            # self.logger.flush()
 
+            # Give more time for logs to be sent and add verification
+            time.sleep(3)  # Increased from 1 to 2 seconds
+
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+        finally:
+            # Ensure logger is properly closed
+            try:
+                self.logger.close()
+            except:
+                pass
 
 def main():
     cache = CacheWriter()
+    
+    def signal_handler(signum, frame):
+        print("\nReceived shutdown signal...")
+        cache.cleanup()
+        print("Service stopped.")
+        sys.exit(0)
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     try:
         while True:
@@ -367,7 +391,7 @@ def main():
                     print(f"Cache Misses: {stats.misses}")
                 
             elif choice == "4":
-                print("Exiting...")
+                print("Initiating graceful shutdown...")
                 break
                 
             else:
