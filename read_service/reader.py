@@ -1,4 +1,4 @@
-# cache_writer.py
+from flask import Flask, jsonify, request
 import ctypes
 import json
 import time
@@ -13,37 +13,15 @@ from ctypes import c_int, c_char_p, c_void_p, c_size_t, CDLL
 from fluent import sender
 import threading
 
-@dataclass
-class CacheStats:
-    total_size: int
-    used_size: int
-    total_entries: int
-    hits: int
-    misses: int
+app = Flask(__name__)
 
-class CacheStats_C(ctypes.Structure):
-    _fields_ = [
-        ("total_size", c_size_t),
-        ("used_size", c_size_t),
-        ("total_entries", c_size_t),
-        ("hits", c_size_t),
-        ("misses", c_size_t)
-    ]
-
-class CacheWriter:
+class CacheReadService:
     def __init__(self):
-        # Initialize Fluentd logger
         self.logger = sender.FluentSender('cache', host='localhost', port=24224)
-        self.node_id = "Stats_Service"
-        self.service_name = "StatsService"
-        
-        # Send registration message
+        self.node_id = "Read_Service"
+        self.service_name = "CacheReadService"
         self.send_registration()
-        
-        # Initialize cache connection
         self.init_cache()
-        
-        # Start heartbeat thread
         self.running = True
         self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop)
         self.heartbeat_thread.daemon = True
@@ -74,7 +52,7 @@ class CacheWriter:
         """Continuous heartbeat sender"""
         while self.running:
             self.send_heartbeat()
-            time.sleep(5)  # Send heartbeat every 5 seconds
+            time.sleep(5)
 
     def log_info(self, message: str, **kwargs):
         """Send INFO level log message"""
@@ -131,14 +109,8 @@ class CacheWriter:
             self.lib.cache_connect.restype = c_int
             self.lib.cache_connect.argtypes = []
             
-            self.lib.cache_set.restype = c_int
-            self.lib.cache_set.argtypes = [c_char_p, c_void_p, c_size_t]
-            
-            self.lib.cache_delete.restype = c_int
-            self.lib.cache_delete.argtypes = [c_char_p]
-            
-            self.lib.cache_get_stats.restype = c_int
-            self.lib.cache_get_stats.argtypes = [ctypes.POINTER(CacheStats_C)]
+            self.lib.cache_get.restype = c_int
+            self.lib.cache_get.argtypes = [c_char_p, c_void_p, ctypes.POINTER(c_size_t)]
             
             # Connect to cache
             result = self.lib.cache_connect()
@@ -160,128 +132,52 @@ class CacheWriter:
             )
             raise
 
-    def set(self, key: str, value: str) -> bool:
-        """Set value in cache"""
+    def get(self, key: str) -> Optional[str]:
+        """Get value from cache"""
         start_time = time.time()
         try:
             key_bytes = key.encode('utf-8')
-            value_bytes = value.encode('utf-8')
-            result = self.lib.cache_set(
+            value_size = c_size_t(1024)  # Initial buffer size
+            value_buffer = ctypes.create_string_buffer(value_size.value)
+            
+            result = self.lib.cache_get(
                 key_bytes,
-                ctypes.cast(value_bytes, c_void_p),
-                len(value_bytes)
+                ctypes.cast(value_buffer, c_void_p),
+                ctypes.byref(value_size)
             )
             
             response_time = (time.time() - start_time) * 1000  # Convert to milliseconds
             
             if result == 0:
+                value = value_buffer.value[:value_size.value].decode('utf-8')
                 self.log_info(
-                    f"Set value for key: {key}",
-                    operation="SET",
+                    f"Retrieved value for key: {key}",
+                    operation="GET",
                     key=key,
-                    value_size=len(value_bytes)
+                    value_size=value_size.value
                 )
                 
                 # Log warning if operation took too long
                 if response_time > 100:  # 100ms threshold
                     self.log_warn(
-                        f"Slow SET operation for key: {key}",
+                        f"Slow GET operation for key: {key}",
                         response_time,
                         100.0
                     )
                 
-                return True
+                return value
             else:
                 self.log_error(
-                    f"Failed to set value for key: {key}",
-                    "SET_ERROR",
-                    "Cache set operation returned error"
-                )
-                return False
-                
-        except Exception as e:
-            self.log_error(
-                f"Exception during SET operation for key: {key}",
-                "SET_EXCEPTION",
-                str(e)
-            )
-            return False
-
-    def delete(self, key: str) -> bool:
-        """Delete value from cache"""
-        start_time = time.time()
-        try:
-            key_bytes = key.encode('utf-8')
-            result = self.lib.cache_delete(key_bytes)
-            
-            response_time = (time.time() - start_time) * 1000
-            
-            if result == 0:
-                self.log_info(
-                    f"Deleted key: {key}",
-                    operation="DELETE",
-                    key=key
-                )
-                
-                if response_time > 100:
-                    self.log_warn(
-                        f"Slow DELETE operation for key: {key}",
-                        response_time,
-                        100.0
-                    )
-                
-                return True
-            else:
-                self.log_error(
-                    f"Failed to delete key: {key}",
-                    "DELETE_ERROR",
-                    "Cache delete operation returned error"
-                )
-                return False
-                
-        except Exception as e:
-            self.log_error(
-                f"Exception during DELETE operation for key: {key}",
-                "DELETE_EXCEPTION",
-                str(e)
-            )
-            return False
-
-    def get_stats(self) -> Optional[CacheStats]:
-        """Get cache statistics"""
-        try:
-            stats = CacheStats_C()
-            result = self.lib.cache_get_stats(ctypes.byref(stats))
-            
-            if result == 0:
-                cache_stats = CacheStats(
-                    total_size=stats.total_size,
-                    used_size=stats.used_size,
-                    total_entries=stats.total_entries,
-                    hits=stats.hits,
-                    misses=stats.misses
-                )
-                
-                self.log_info(
-                    "Retrieved cache statistics",
-                    operation="STATS",
-                    total_entries=stats.total_entries,
-                    hit_ratio=f"{(stats.hits/(stats.hits + stats.misses) if stats.hits + stats.misses > 0 else 0):.2%}"
-                )
-                
-                return cache_stats
-            else:
-                self.log_error(
-                    "Failed to get cache statistics",
-                    "STATS_ERROR",
-                    "Cache stats operation returned error"
+                    f"Failed to get value for key: {key}",
+                    "GET_ERROR",
+                    "Cache get operation returned error"
                 )
                 return None
                 
         except Exception as e:
             self.log_error(
-                "Exception while getting cache statistics",
-                "STATS_EXCEPTION",
+                f"Exception during GET operation for key: {key}",
+                "GET_EXCEPTION",
                 str(e)
             )
             return None
@@ -289,7 +185,6 @@ class CacheWriter:
     def cleanup(self):
         """Cleanup before exit"""
         try:
-            # Stop heartbeat thread
             self.running = False
             if self.heartbeat_thread.is_alive():
                 self.heartbeat_thread.join()
@@ -326,79 +221,54 @@ class CacheWriter:
                 "timestamp": datetime.now().isoformat()
             }
             self.logger.emit('heartbeat', heartbeat_msg)
-
-            # Force flush any remaining messages
-            # self.logger.flush()
-
-            # Give more time for logs to be sent and add verification
-            time.sleep(3)  # Increased from 1 to 2 seconds
+            time.sleep(3)
 
         except Exception as e:
             print(f"Error during cleanup: {str(e)}")
         finally:
-            # Ensure logger is properly closed
             try:
                 self.logger.close()
             except:
                 pass
 
-def main():
-    cache = CacheWriter()
+@app.route('/get/<key>', methods=['GET'])
+def get_value(key):
+    cache = app.config['cache']
+    value = cache.get(key)
     
-    def signal_handler(signum, frame):
-        print("\nReceived shutdown signal...")
-        cache.cleanup()
-        print("Service stopped.")
-        sys.exit(0)
+    if value is not None:
+        return jsonify({
+            'key': key,
+            'value': value
+        })
+    return jsonify({'error': f'Key not found: {key}'}), 404
 
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+@app.route('/exists/<key>', methods=['GET'])
+def check_exists(key):
+    cache = app.config['cache']
+    value = cache.get(key)
     
+    return jsonify({
+        'key': key,
+        'exists': value is not None
+    })
+
+def cleanup_handler(signum, frame):
+    print("\nReceived shutdown signal...")
+    app.config['cache'].cleanup()
+    print("Service stopped.")
+    sys.exit(0)
+
+if __name__ == '__main__':
     try:
-        while True:
-            print("\nCache Writer Service")
-            print("1. Set value")
-            print("2. Delete value")
-            print("3. Show stats")
-            print("4. Exit")
-            
-            choice = input("Enter choice (1-4): ")
-            
-            if choice == "1":
-                key = input("Enter key: ")
-                value = input("Enter value: ")
-                if cache.set(key, value):
-                    print("Value set successfully")
-                else:
-                    print("Failed to set value")
-                    
-            elif choice == "2":
-                key = input("Enter key: ")
-                if cache.delete(key):
-                    print("Value deleted successfully")
-                else:
-                    print("Failed to delete value")
-                    
-            elif choice == "3":
-                stats = cache.get_stats()
-                if stats:
-                    print("\nCache Statistics:")
-                    print(f"Total Size: {stats.total_size}")
-                    print(f"Used Size: {stats.used_size}")
-                    print(f"Total Entries: {stats.total_entries}")
-                    print(f"Cache Hits: {stats.hits}")
-                    print(f"Cache Misses: {stats.misses}")
-                
-            elif choice == "4":
-                print("Initiating graceful shutdown...")
-                break
-                
-            else:
-                print("Invalid choice")
+        cache = CacheReadService()
+        app.config['cache'] = cache
+        
+        signal.signal(signal.SIGINT, cleanup_handler)
+        signal.signal(signal.SIGTERM, cleanup_handler)
+        
+        print("Starting Cache Read Service on port 4003")
+        app.run(host='0.0.0.0', port=4003)
     finally:
         cache.cleanup()
         print("Service stopped.")
-
-if __name__ == "__main__":
-    main()

@@ -1,0 +1,52 @@
+version: '3'
+
+services:
+  elasticsearch:
+    image: elasticsearch:8.12.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - elk_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kibana:
+    image: kibana:8.12.0
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - elk_network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  kafka-to-elastic:
+    build: .
+    container_name: kafka-to-elastic
+    network_mode: "host"  # Keeping this since you might need host networking for Kafka
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    # Removed the networks section for this service
+
+networks:
+  elk_network:
+    driver: bridge
+
+volumes:
+  elasticsearch_data:
+    driver: local

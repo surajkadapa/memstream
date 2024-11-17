@@ -1,0 +1,95 @@
+version: '3.8'
+
+networks:
+  cache_net:
+    driver: bridge
+
+services:
+  fluentd:
+    container_name: cache-fluentd
+    image: fluent/fluentd:v1.16-1
+    volumes:
+      - ./fluent.conf:/fluentd/etc/fluent.conf
+    networks:
+      - cache_net
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+
+  writer:
+    container_name: cache-writer-service
+    build:
+      context: ./writer_service
+      dockerfile: Dockerfile.writer
+    stop_grace_period: 10s
+    privileged: true
+    ipc: host
+    pid: host
+    networks:
+      - cache_net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
+    depends_on:
+      - fluentd
+    environment:
+      - FLUENT_HOST=fluentd
+      - FLUENT_PORT=24224
+    ports:
+      - "4001:4001"
+
+  reader:
+    container_name: cache-reader-service
+    build:
+      context: ./read_service
+      dockerfile: Dockerfile.read
+    stop_grace_period: 10s
+    privileged: true
+    ipc: host
+    pid: host
+    networks:
+      - cache_net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
+    depends_on:
+      - fluentd
+    environment:
+      - FLUENT_HOST=fluentd
+      - FLUENT_PORT=24224
+    ports:
+      - "4003:4003"
+
+  analytics:
+    container_name: cache-analytics-service
+    build:
+      context: ./analytics_service
+      dockerfile: Dockerfile.analytics
+    stop_grace_period: 10s
+    privileged: true
+    ipc: host
+    pid: host
+    networks:
+      - cache_net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - type: bind
+        source: /dev/shm
+        target: /dev/shm
+    depends_on:
+      - fluentd
+    environment:
+      - FLUENT_HOST=fluentd
+      - FLUENT_PORT=24224
+    ports:
+      - "4002:4002"
