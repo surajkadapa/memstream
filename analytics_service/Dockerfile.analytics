@@ -13,8 +13,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Fluentd directly using gem
-RUN gem install fluentd --no-doc
-RUN gem install fluent-plugin-kafka --no-doc
+
 
 # Create directories for Fluentd
 RUN mkdir -p /etc/fluent

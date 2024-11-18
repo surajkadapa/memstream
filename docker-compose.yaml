@@ -7,7 +7,9 @@ networks:
 services:
   fluentd:
     container_name: cache-fluentd
-    image: fluent/fluentd:v1.16-1
+    build:
+      context: .
+      dockerfile: Dockerfile.fluentd
     volumes:
       - ./fluent.conf:/fluentd/etc/fluent.conf
     networks:

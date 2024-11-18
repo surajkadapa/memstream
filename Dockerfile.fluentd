@@ -1,0 +1,15 @@
+FROM fluent/fluentd:v1.16-1
+
+USER root
+
+# Install dependencies
+RUN apk add --no-cache \
+    sudo \
+    ruby-dev \
+    gcc \
+    make \
+    libc-dev \
+    && gem install fluent-plugin-kafka \
+    && rm -rf /var/cache/apk/*
+
+USER fluent

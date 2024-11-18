@@ -14,17 +14,28 @@ from fluent import sender
 import threading
 
 app = Flask(__name__)
+shutdown_flag = threading.Event()
 
 class CacheReadService:
     def __init__(self):
-        self.logger = sender.FluentSender('cache', host='localhost', port=24224)
+        fluent_host = os.getenv('FLUENT_HOST', 'localhost')
+        fluent_port = int(os.getenv('FLUENT_PORT', '24224'))
+        print(f"Connecting to fluentd at {fluent_host}:{fluent_port}")
+        
+        self.logger = sender.FluentSender(
+            'cache',
+            host=fluent_host,
+            port=fluent_port,
+            nanosecond_precision=True
+        )
         self.node_id = "Read_Service"
         self.service_name = "CacheReadService"
         self.send_registration()
         self.init_cache()
         self.running = True
+        self.shutdown_event = threading.Event()
         self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop)
-        self.heartbeat_thread.daemon = True
+        self.heartbeat_thread.daemon = False
         self.heartbeat_thread.start()
 
     def send_registration(self):
@@ -36,7 +47,8 @@ class CacheReadService:
             "status": "UP",
             "timestamp": datetime.now().isoformat()
         }
-        self.logger.emit('registration', registration_msg)
+        if not self.logger.emit('registration', registration_msg):
+            print(f"Failed to send registration: {self.logger.last_error}")
 
     def send_heartbeat(self):
         """Send single heartbeat message"""
@@ -46,59 +58,72 @@ class CacheReadService:
             "status": "UP",
             "timestamp": datetime.now().isoformat()
         }
-        self.logger.emit('heartbeat', heartbeat_msg)
+        if not self.logger.emit('heartbeat', heartbeat_msg):
+            print(f"Failed to send heartbeat: {self.logger.last_error}")
 
     def heartbeat_loop(self):
         """Continuous heartbeat sender"""
-        while self.running:
+        while self.running and not self.shutdown_event.is_set():
             self.send_heartbeat()
-            time.sleep(5)
+            self.shutdown_event.wait(timeout=5)
 
     def log_info(self, message: str, **kwargs):
         """Send INFO level log message"""
-        log_msg = {
-            "log_id": str(uuid.uuid4()),
-            "node_id": self.node_id,
-            "log_level": "INFO",
-            "message_type": "LOG",
-            "message": message,
-            "service_name": self.service_name,
-            "timestamp": datetime.now().isoformat()
-        }
-        log_msg.update(kwargs)
-        self.logger.emit('log.info', log_msg)
+        try:
+            log_msg = {
+                "log_id": str(uuid.uuid4()),
+                "node_id": self.node_id,
+                "log_level": "INFO",
+                "message_type": "LOG",
+                "message": message,
+                "service_name": self.service_name,
+                "timestamp": datetime.now().isoformat()
+            }
+            log_msg.update(kwargs)
+            if not self.logger.emit('log.info', log_msg):
+                print(f"Failed to send info log: {self.logger.last_error}")
+        except Exception as e:
+            print(f"Error sending info log: {str(e)}")
 
     def log_warn(self, message: str, response_time_ms: float, threshold_limit_ms: float):
         """Send WARN level log message"""
-        log_msg = {
-            "log_id": str(uuid.uuid4()),
-            "node_id": self.node_id,
-            "log_level": "WARN",
-            "message_type": "LOG",
-            "message": message,
-            "service_name": self.service_name,
-            "response_time_ms": response_time_ms,
-            "threshold_limit_ms": threshold_limit_ms,
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.emit('log.warn', log_msg)
+        try:
+            log_msg = {
+                "log_id": str(uuid.uuid4()),
+                "node_id": self.node_id,
+                "log_level": "WARN",
+                "message_type": "LOG",
+                "message": message,
+                "service_name": self.service_name,
+                "response_time_ms": response_time_ms,
+                "threshold_limit_ms": threshold_limit_ms,
+                "timestamp": datetime.now().isoformat()
+            }
+            if not self.logger.emit('log.warn', log_msg):
+                print(f"Failed to send warn log: {self.logger.last_error}")
+        except Exception as e:
+            print(f"Error sending warn log: {str(e)}")
 
     def log_error(self, message: str, error_code: str, error_message: str):
         """Send ERROR level log message"""
-        log_msg = {
-            "log_id": str(uuid.uuid4()),
-            "node_id": self.node_id,
-            "log_level": "ERROR",
-            "message_type": "LOG",
-            "message": message,
-            "service_name": self.service_name,
-            "error_details": {
-                "error_code": error_code,
-                "error_message": error_message
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.emit('log.error', log_msg)
+        try:
+            log_msg = {
+                "log_id": str(uuid.uuid4()),
+                "node_id": self.node_id,
+                "log_level": "ERROR",
+                "message_type": "LOG",
+                "message": message,
+                "service_name": self.service_name,
+                "error_details": {
+                    "error_code": error_code,
+                    "error_message": error_message
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            if not self.logger.emit('log.error', log_msg):
+                print(f"Failed to send error log: {self.logger.last_error}")
+        except Exception as e:
+            print(f"Error sending error log: {str(e)}")
 
     def init_cache(self):
         """Initialize cache connection"""
@@ -146,7 +171,7 @@ class CacheReadService:
                 ctypes.byref(value_size)
             )
             
-            response_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+            response_time = (time.time() - start_time) * 1000
             
             if result == 0:
                 value = value_buffer.value[:value_size.value].decode('utf-8')
@@ -157,8 +182,7 @@ class CacheReadService:
                     value_size=value_size.value
                 )
                 
-                # Log warning if operation took too long
-                if response_time > 100:  # 100ms threshold
+                if response_time > 100:
                     self.log_warn(
                         f"Slow GET operation for key: {key}",
                         response_time,
@@ -184,52 +208,65 @@ class CacheReadService:
 
     def cleanup(self):
         """Cleanup before exit"""
-        try:
+        if hasattr(self, 'running') and self.running:
+            print("Starting cleanup process...")
             self.running = False
-            if self.heartbeat_thread.is_alive():
-                self.heartbeat_thread.join()
-
-            # Send WARN log for node going down
-            warn_msg = {
-                "log_id": str(uuid.uuid4()),
-                "node_id": self.node_id,
-                "log_level": "WARN",
-                "message_type": "LOG",
-                "message": "node going off",
-                "service_name": self.service_name,
-                "response_time_ms": "0",
-                "threshold_limit_ms": "0",
-                "timestamp": datetime.now().isoformat()
-            }
-            self.logger.emit('log.warn', warn_msg)
-
-            # Send registry update with DOWN status
-            registry_msg = {
-                "message_type": "REGISTRATION",
-                "node_id": self.node_id,
-                "service_name": self.service_name,
-                "status": "DOWN",
-                "timestamp": datetime.now().isoformat()
-            }
-            self.logger.emit('registration', registry_msg)
-
-            # Final heartbeat with DOWN status
-            heartbeat_msg = {
-                "node_id": self.node_id,
-                "message_type": "HEARTBEAT",
-                "status": "DOWN",
-                "timestamp": datetime.now().isoformat()
-            }
-            self.logger.emit('heartbeat', heartbeat_msg)
-            time.sleep(3)
-
-        except Exception as e:
-            print(f"Error during cleanup: {str(e)}")
-        finally:
+            self.shutdown_event.set()
+            
             try:
-                self.logger.close()
-            except:
-                pass
+                # Stop heartbeat thread first
+                if hasattr(self, 'heartbeat_thread') and self.heartbeat_thread.is_alive():
+                    print("Stopping heartbeat thread...")
+                    self.heartbeat_thread.join(timeout=5)
+
+                messages = [
+                    ('log.warn', {
+                        "log_id": str(uuid.uuid4()),
+                        "node_id": self.node_id,
+                        "log_level": "WARN",
+                        "message_type": "LOG",
+                        "message": "node going off",
+                        "service_name": self.service_name,
+                        "response_time_ms": "0",
+                        "threshold_limit_ms": "0",
+                        "timestamp": datetime.now().isoformat()
+                    }),
+                    ('registration', {
+                        "message_type": "REGISTRATION",
+                        "node_id": self.node_id,
+                        "service_name": self.service_name,
+                        "status": "DOWN",
+                        "timestamp": datetime.now().isoformat()
+                    }),
+                    ('heartbeat', {
+                        "node_id": self.node_id,
+                        "message_type": "HEARTBEAT",
+                        "status": "DOWN",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                ]
+
+                for tag, msg in messages:
+                    print(f"Sending {tag} message...")
+                    success = self.logger.emit(tag, msg)
+                    if not success:
+                        print(f"Failed to send {tag}: {self.logger.last_error}")
+                    time.sleep(0.5)
+
+                print("Waiting for final messages to be processed...")
+                time.sleep(2)
+
+            except Exception as e:
+                print(f"Error during cleanup: {str(e)}")
+            finally:
+                try:
+                    if hasattr(self, 'logger'):
+                        print("Closing logger...")
+                        self.logger.close()
+                        print("Logger closed")
+                except Exception as e:
+                    print(f"Error closing logger: {str(e)}")
+                print("Cleanup completed")
 
 @app.route('/get/<key>', methods=['GET'])
 def get_value(key):
@@ -253,22 +290,37 @@ def check_exists(key):
         'exists': value is not None
     })
 
-def cleanup_handler(signum, frame):
-    print("\nReceived shutdown signal...")
-    app.config['cache'].cleanup()
-    print("Service stopped.")
-    sys.exit(0)
+def signal_handler(signum, frame):
+    print(f"\nReceived signal {signum}")
+    shutdown_flag.set()
+
+def flask_thread():
+    app.run(host='0.0.0.0', port=4003, use_reloader=False)
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     try:
         cache = CacheReadService()
         app.config['cache'] = cache
+
+        server_thread = threading.Thread(target=flask_thread)
+        server_thread.daemon = True
+        server_thread.start()
         
-        signal.signal(signal.SIGINT, cleanup_handler)
-        signal.signal(signal.SIGTERM, cleanup_handler)
+        print("Service started, waiting for requests...")
         
-        print("Starting Cache Read Service on port 4003")
-        app.run(host='0.0.0.0', port=4003)
+        while not shutdown_flag.is_set():
+            time.sleep(0.1)
+            
+        print("Shutdown flag received, starting cleanup...")
+        if 'cache' in app.config:
+            app.config['cache'].cleanup()
+            
+    except Exception as e:
+        print(f"Error during execution: {e}")
     finally:
-        cache.cleanup()
-        print("Service stopped.")
+        if 'cache' in app.config:
+            app.config['cache'].cleanup()
+        print("Service stopped")
