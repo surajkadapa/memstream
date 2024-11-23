@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cache Manager</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.js"></script>
+    <style>
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid #3498db;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">Cache Manager</h1>
+
+        <!-- Set Value -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-4">Set Value</h2>
+            <div class="flex gap-4">
+                <input type="text" id="setKey" placeholder="Key" class="border p-2 rounded">
+                <input type="text" id="setValue" placeholder="Value" class="border p-2 rounded">
+                <button onclick="setValue()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Set</button>
+                <div id="setLoader" class="loader mt-2"></div>
+            </div>
+        </div>
+
+        <!-- Get Value -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-4">Get Value</h2>
+            <div class="flex gap-4">
+                <input type="text" id="getKey" placeholder="Key" class="border p-2 rounded">
+                <button onclick="getValue()" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Get</button>
+                <div id="getLoader" class="loader mt-2"></div>
+            </div>
+            <div id="getValue" class="mt-4"></div>
+        </div>
+
+        <!-- Delete Value -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-semibold mb-4">Delete Value</h2>
+            <div class="flex gap-4">
+                <input type="text" id="deleteKey" placeholder="Key" class="border p-2 rounded">
+                <button onclick="deleteValue()" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Delete</button>
+                <div id="deleteLoader" class="loader mt-2"></div>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Cache Statistics</h2>
+            <button onclick="getStats()" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 mb-4">Refresh Stats</button>
+            <div id="getStats" class="grid grid-cols-2 gap-4"></div>
+            <div id="statsLoader" class="loader mt-2"></div>
+        </div>
+    </div>
+
+    <script>
+        async function setValue() {
+            const key = document.getElementById('setKey').value;
+            const value = document.getElementById('setValue').value;
+            document.getElementById('setLoader').style.display = 'block';
+
+            try {
+                const response = await fetch('/api/set', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key, value})
+                });
+                const data = await response.json();
+                alert(data.message || data.error);
+            } catch (error) {
+                alert('Error setting value');
+            }
+
+            document.getElementById('setLoader').style.display = 'none';
+        }
+
+        async function getValue() {
+            const key = document.getElementById('getKey').value;
+            document.getElementById('getLoader').style.display = 'block';
+            
+            try {
+                const response = await fetch(`/api/get/${key}`);
+                const data = await response.json();
+                document.getElementById('getValue').textContent = 
+                    data.value || data.error || 'Not found';
+            } catch (error) {
+                document.getElementById('getValue').textContent = 'Error getting value';
+            }
+
+            document.getElementById('getLoader').style.display = 'none';
+        }
+
+        async function deleteValue() {
+            const key = document.getElementById('deleteKey').value;
+            document.getElementById('deleteLoader').style.display = 'block';
+
+            try {
+                const response = await fetch('/api/delete', {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key})
+                });
+                const data = await response.json();
+                alert(data.message || data.error);
+            } catch (error) {
+                alert('Error deleting value');
+            }
+
+            document.getElementById('deleteLoader').style.display = 'none';
+        }
+
+        async function getStats() {
+            document.getElementById('statsLoader').style.display = 'block';
+            
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                const statsDiv = document.getElementById('getStats');
+                statsDiv.innerHTML = '';
+                
+                Object.entries(data).forEach(([key, value]) => {
+                    const div = document.createElement('div');
+                    div.className = 'p-4 bg-gray-50 rounded';
+                    div.innerHTML = `
+                        <div class="font-semibold">${key}</div>
+                        <div>${value}</div>
+                    `;
+                    statsDiv.appendChild(div);
+                });
+            } catch (error) {
+                document.getElementById('getStats').textContent = 'Error getting stats';
+            }
+
+            document.getElementById('statsLoader').style.display = 'none';
+        }
+
+        // Initial stats load
+        getStats();
+    </script>
+</body>
+</html>
