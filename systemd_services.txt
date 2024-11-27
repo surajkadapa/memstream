@@ -1,0 +1,33 @@
+#zookeeper service
+sudo nano /etc/systemd/system/zookeeper.service
+
+[Unit]
+Description=Apache Zookeeper server
+Requires=network.target
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/kafka/bin/zookeeper-server-start.sh /opt/kafka/config/zookeeper.properties
+ExecStop=/opt/kafka/bin/zookeeper-server-stop.sh
+Restart=on-abnormal
+
+[Install]
+WantedBy=multi-user.target
+
+#kafka service
+sudo nano /etc/systemd/system/kafka.service
+
+[Unit]
+Description=Apache Kafka Server
+Requires=zookeeper.service
+After=zookeeper.service
+
+[Service]
+Type=simple
+ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
+ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+Restart=on-abnormal
+
+[Install]
+WantedBy=multi-user.target
